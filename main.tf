@@ -120,8 +120,13 @@ module "eks" {
 }
 
 # ───────────── NLB interno para integração via VPC Link (API Gateway) ─────────────
-# O app expõe um Service ClusterIP; um TargetGroupBinding (no repo oficina-app) registra
-# os pods como alvos IP deste target group. O API Gateway integra via VPC Link → este NLB.
+# Um listener e um target group por serviço (var.servicos). Cada serviço expõe um Service
+# ClusterIP, e o TargetGroupBinding do overlay aws dele registra os pods como alvos IP do
+# seu target group. O API Gateway integra via VPC Link → listener do serviço.
+#
+# O NLB não tem security group: os alvos são IP e chegam aos pods pela regra
+# nlb_to_pods_8080 do SG dos nós (CIDR da VPC). Isso também cobre a Lambda, que chama o
+# endpoint interno do os-service pelo listener dele (o SG da Lambda libera só essa porta).
 resource "aws_lb" "app" {
   name               = "${local.name}-app-nlb"
   internal           = true
@@ -130,12 +135,17 @@ resource "aws_lb" "app" {
   tags               = local.tags
 }
 
-resource "aws_lb_target_group" "app" {
-  name        = "${local.name}-app-tg"
-  port        = 80
+resource "aws_lb_target_group" "servico" {
+  for_each = var.servicos
+
+  name        = "${local.name}-${each.key}-tg"
+  port        = 8080
   protocol    = "TCP"
   target_type = "ip"
   vpc_id      = module.vpc.vpc_id
+
+  # Tempo para o pod terminar a requisição em andamento quando sai do target group.
+  deregistration_delay = 30
 
   health_check {
     protocol = "HTTP"
@@ -143,16 +153,20 @@ resource "aws_lb_target_group" "app" {
     port     = "traffic-port"
   }
 
-  tags = local.tags
+  tags = merge(local.tags, { Service = "${each.key}-service" })
 }
 
-resource "aws_lb_listener" "app" {
+resource "aws_lb_listener" "servico" {
+  for_each = var.servicos
+
   load_balancer_arn = aws_lb.app.arn
-  port              = 80
+  port              = each.value
   protocol          = "TCP"
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.app.arn
+    target_group_arn = aws_lb_target_group.servico[each.key].arn
   }
+
+  tags = merge(local.tags, { Service = "${each.key}-service" })
 }

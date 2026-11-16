@@ -14,6 +14,20 @@ terraform {
       source  = "hashicorp/helm"
       version = "~> 2.14"
     }
+    # kubectl_manifest aplica CRs (RabbitmqCluster) cujo CRD nasce no mesmo apply,
+    # o que o kubernetes_manifest não faz (ele exige o CRD já no plan).
+    kubectl = {
+      source  = "alekc/kubectl"
+      version = "~> 2.4"
+    }
+    http = {
+      source  = "hashicorp/http"
+      version = "~> 3.6"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.7"
+    }
   }
 
   backend "s3" {
@@ -42,4 +56,11 @@ provider "helm" {
     cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
     token                  = data.aws_eks_cluster_auth.this.token
   }
+}
+
+provider "kubectl" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  token                  = data.aws_eks_cluster_auth.this.token
+  load_config_file       = false
 }

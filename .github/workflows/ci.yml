@@ -6,7 +6,7 @@ on:
 
 jobs:
   terraform:
-    name: Terraform fmt / validate
+    name: Terraform fmt / validate / test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,3 +14,5 @@ jobs:
       - run: terraform fmt -check -recursive
       - run: terraform init -backend=false
       - run: terraform validate
+      # Providers mockados e módulos substituídos (tests/): não precisa de conta AWS.
+      - run: terraform test
