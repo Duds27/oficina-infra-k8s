@@ -51,7 +51,7 @@ flowchart TB
 | Arquivo | O que cria |
 | --- | --- |
 | `main.tf` | VPC (2 AZs, NAT único), EKS (IRSA habilitado) e o NLB interno: um `aws_lb_target_group` (alvos IP, porta 8080, health check `/health/ready`) e um `aws_lb_listener` por serviço de `var.servicos` |
-| `addons.tf` | metrics-server, aws-load-balancer-controller (IRSA) e nri-bundle (só com a licença) |
+| `addons.tf` | metrics-server, aws-load-balancer-controller (IRSA) e nri-bundle, com o Prometheus agent (só com a licença) |
 | `storage.tf` | add-on `aws-ebs-csi-driver` com role IRSA própria e a StorageClass `gp3`, marcada como padrão |
 | `namespaces.tf` | `oficina-<serviço>` e `messaging` |
 | `rabbitmq.tf` | Operator, `RabbitmqCluster`, usuários e secrets |
@@ -72,6 +72,11 @@ flowchart TB
   operator: o secret `rabbitmq-default-user` existe, mas o usuário não. A senha do admin fica
   em `<projeto>-<ambiente>/rabbitmq/admin`. Acesso:
   `kubectl -n messaging port-forward svc/rabbitmq 15672` e abrir `http://localhost:15672`.
+- **Métricas (Etapa 5):**
+  - o plugin Prometheus expõe as métricas por fila (`prometheus.return_per_object_metrics`), por exemplo `rabbitmq_queue_messages{queue="billing-estornar-pagamento_error"}`;
+  - o pod é anotado para o scrape (`prometheus.io/scrape`, porta 15692);
+  - o Prometheus agent do `nri-bundle` coleta e manda essas métricas ao New Relic, para o dashboard e os alertas das filas `_error`;
+  - a métrica por fila foi conferida num container `rabbitmq:4.1-management` com a mesma configuração.
 - **Réplicas:** 1 em homolog. Em prod, `rabbitmq_replicas = 3` com *quorum queues*. A
   memória fica com request igual ao limit (`rabbitmq_memory`, 512Mi), como o operator recomenda.
 - Validado em 2026-11-16 num cluster kind: o operator sobe com os recursos reduzidos, o
@@ -134,6 +139,7 @@ VPC, o EKS e as roles IRSA são substituídos pelas saídas que os recursos daqu
 - EBS CSI com IRSA e a gp3 como padrão;
 - usuários, secrets e definitions do RabbitMQ;
 - operator fixado e com recursos reduzidos;
+- métricas do RabbitMQ por fila e coletadas pelo nri-bundle;
 - 3 réplicas em prod;
 - checksum diferente derruba o plan;
 - validações de réplicas e do os-service obrigatório.

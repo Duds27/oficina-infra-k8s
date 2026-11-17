@@ -187,6 +187,30 @@ run "rabbitmq_com_um_usuario_por_servico" {
   }
 }
 
+run "metricas_do_rabbitmq_por_fila_e_coletadas" {
+  variables {
+    newrelic_license_key = "licenca-de-teste"
+  }
+
+  assert {
+    condition     = strcontains(yamldecode(kubectl_manifest.rabbitmq_cluster.yaml_body).spec.rabbitmq.additionalConfig, "prometheus.return_per_object_metrics = true")
+    error_message = "O plugin Prometheus expõe as métricas por fila (para ver as _error)."
+  }
+
+  assert {
+    condition = (
+      yamldecode(kubectl_manifest.rabbitmq_cluster.yaml_body).spec.override.statefulSet.spec.template.metadata.annotations["prometheus.io/scrape"] == "true" &&
+      yamldecode(kubectl_manifest.rabbitmq_cluster.yaml_body).spec.override.statefulSet.spec.template.metadata.annotations["prometheus.io/port"] == "15692"
+    )
+    error_message = "Pod do RabbitMQ anotado para o scrape na porta 15692."
+  }
+
+  assert {
+    condition     = contains([for s in helm_release.newrelic[0].set : "${s.name}=${s.value}"], "newrelic-prometheus-agent.enabled=true")
+    error_message = "O nri-bundle liga o Prometheus agent, que coleta os pods anotados."
+  }
+}
+
 run "operator_fixado_e_com_recursos_reduzidos" {
   assert {
     condition     = data.http.rabbitmq_operator.url == "https://github.com/rabbitmq/cluster-operator/releases/download/v2.21.1/cluster-operator.yml"

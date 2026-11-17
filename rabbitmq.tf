@@ -186,8 +186,11 @@ resource "kubectl_manifest" "rabbitmq_cluster" {
 
       rabbitmq = {
         additionalPlugins = ["rabbitmq_management", "rabbitmq_prometheus"]
-        additionalConfig  = <<-EOT
+        # return_per_object_metrics: o plugin Prometheus expõe as métricas por fila (com o nome
+        # dela), e não só o total do nó. Assim dá para ver as filas _error (Etapa 5, 5.4).
+        additionalConfig = <<-EOT
           load_definitions = /etc/rabbitmq/definitions/definitions.json
+          prometheus.return_per_object_metrics = true
         EOT
       }
 
@@ -195,6 +198,14 @@ resource "kubectl_manifest" "rabbitmq_cluster" {
         statefulSet = {
           spec = {
             template = {
+              # Scrape do plugin Prometheus (porta 15692) pelo Prometheus agent do nri-bundle.
+              metadata = {
+                annotations = {
+                  "prometheus.io/scrape" = "true"
+                  "prometheus.io/port"   = "15692"
+                  "prometheus.io/path"   = "/metrics"
+                }
+              }
               spec = {
                 containers = [{
                   name = "rabbitmq"

@@ -104,6 +104,12 @@ resource "helm_release" "newrelic" {
     name  = "logging.enabled"
     value = "true"
   }
+  # Prometheus agent: coleta as métricas dos pods anotados com prometheus.io/scrape, como o
+  # RabbitMQ (profundidade das filas, _error, consumidores, publish/ack). Etapa 5, 5.4.
+  set {
+    name  = "newrelic-prometheus-agent.enabled"
+    value = "true"
+  }
 
   depends_on = [module.eks]
 }
