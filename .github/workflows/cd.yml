@@ -49,8 +49,9 @@ jobs:
           VARS=(-var="environment=${TF_ENV}" -var="aws_region=${AWS_REGION_TF}"
                 -var="cluster_admin_arns=${ADMINS}" -var="newrelic_license_key=${NR_LICENSE}")
           # O provider kubectl não aceita o endpoint do cluster ainda desconhecido no plan. Num
-          # ambiente novo, a VPC e o EKS sobem antes, num apply com -target.
+          # ambiente novo, a VPC e o EKS sobem antes, num apply com -target. Os dois módulos: só
+          # com o EKS, a VPC sai sem NAT, IGW e rotas, e os nós não entram no cluster.
           if ! aws eks describe-cluster --name "oficina-${TF_ENV}" > /dev/null 2>&1; then
-            terraform apply -auto-approve -target=module.eks "${VARS[@]}"
+            terraform apply -auto-approve -target=module.vpc -target=module.eks "${VARS[@]}"
           fi
           terraform apply -auto-approve "${VARS[@]}"

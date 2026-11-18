@@ -141,15 +141,19 @@ Deploy automático em `homolog`/`prod`. Requer, no repositório:
 
 ```bash
 terraform init -backend-config="bucket=<S3>" -backend-config="key=infra-k8s/homolog/terraform.tfstate" ...
-terraform apply -var="environment=homolog" -target=module.eks   # só na primeira vez
+terraform apply -var="environment=homolog" -target=module.vpc -target=module.eks   # só na primeira vez
 terraform apply -var="environment=homolog"
 ```
 
 **Primeiro apply.** Num ambiente novo, o provider `kubectl` não aceita o endpoint do cluster ainda
 desconhecido no plan, e o plan falha com `no configuration has been provided`. Por isso a VPC e o
-EKS sobem antes, com `-target=module.eks`, e o resto vem no apply seguinte. O CD faz isso sozinho
-quando o cluster não existe. Conferido com um plan real na conta, em 2026-11-17: 47 recursos no
-primeiro passo e 98 no total.
+EKS sobem antes, com `-target=module.vpc -target=module.eks`, e o resto vem no apply seguinte. O CD
+faz isso sozinho quando o cluster não existe.
+
+Os **dois** `-target` são necessários. O `-target` leva junto só o que o alvo referencia, e o EKS
+usa da VPC só o ID e as subnets. Com `-target=module.eks` sozinho, a VPC sobe sem NAT Gateway,
+Internet Gateway e rotas. Aí o `nodeadm` dos nós não alcança a API do EC2, e o node group nunca
+entra no cluster. Foi o que aconteceu no primeiro apply real, em 2026-11-18.
 
 **Ordem na migração da Fase 3 para a 4:** o listener único (porta 80) e o target group `app`
 dão lugar a um por serviço. Depois do apply daqui, aplique o `oficina-lambda-auth` (rotas por
