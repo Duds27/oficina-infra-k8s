@@ -1,5 +1,5 @@
 # Testes sem conta AWS nem cluster: providers mockados e os módulos da VPC, do EKS e das
-# roles IRSA substituídos pelas saídas que os recursos daqui usam.
+# roles do Pod Identity substituídos pelas saídas que os recursos daqui usam.
 # Rodar com: terraform init -backend=false && terraform test
 
 # O provider AWS valida o formato dos ARNs que um recurso passa para outro.
@@ -38,19 +38,29 @@ override_module {
     cluster_name                       = "oficina-homolog"
     cluster_endpoint                   = "https://eks.exemplo"
     cluster_certificate_authority_data = "Y2E="
-    oidc_provider_arn                  = "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABC"
     node_security_group_id             = "sg-nos"
   }
 }
 
 override_module {
-  target  = module.lb_controller_irsa
+  target  = module.lb_controller_pod_identity
   outputs = { iam_role_arn = "arn:aws:iam::123456789012:role/lb-controller" }
 }
 
 override_module {
-  target  = module.ebs_csi_irsa
+  target  = module.ebs_csi_pod_identity
   outputs = { iam_role_arn = "arn:aws:iam::123456789012:role/ebs-csi" }
+}
+
+# Quem aplica o Terraform: o usuário IAM que cria o cluster.
+override_data {
+  target = data.aws_caller_identity.atual
+  values = { arn = "arn:aws:iam::123456789012:user/criador" }
+}
+
+override_data {
+  target = data.aws_iam_session_context.atual
+  values = { issuer_arn = "arn:aws:iam::123456789012:user/criador" }
 }
 
 override_resource {
@@ -127,10 +137,14 @@ run "namespaces_dos_servicos_e_do_broker" {
   }
 }
 
-run "ebs_csi_com_irsa_e_gp3_como_padrao" {
+run "ebs_csi_com_pod_identity_e_gp3_como_padrao" {
   assert {
-    condition     = aws_eks_addon.ebs_csi.service_account_role_arn == "arn:aws:iam::123456789012:role/ebs-csi"
-    error_message = "O add-on do EBS CSI usa a role IRSA própria."
+    condition = (
+      one(aws_eks_addon.ebs_csi.pod_identity_association).role_arn == "arn:aws:iam::123456789012:role/ebs-csi" &&
+      one(aws_eks_addon.ebs_csi.pod_identity_association).service_account == "ebs-csi-controller-sa" &&
+      aws_eks_addon.ebs_csi.service_account_role_arn == null
+    )
+    error_message = "O add-on do EBS CSI recebe a role própria por Pod Identity, sem IRSA."
   }
 
   assert {
@@ -140,6 +154,44 @@ run "ebs_csi_com_irsa_e_gp3_como_padrao" {
       kubernetes_storage_class_v1.gp3.metadata[0].annotations["storageclass.kubernetes.io/is-default-class"] == "true"
     )
     error_message = "StorageClass gp3 do EBS CSI, marcada como padrão."
+  }
+}
+
+run "lb_controller_sem_anotacao_de_irsa" {
+  assert {
+    condition     = !anytrue([for s in helm_release.aws_lb_controller.set : strcontains(s.name, "role-arn")])
+    error_message = "Com Pod Identity, a ServiceAccount do controller não leva a anotação eks.amazonaws.com/role-arn."
+  }
+
+  assert {
+    condition     = one([for s in helm_release.aws_lb_controller.set : s.value if s.name == "serviceAccount.name"]) == "aws-load-balancer-controller"
+    error_message = "A ServiceAccount tem que ser a da associação do Pod Identity."
+  }
+}
+
+run "admins_do_cluster_sem_repetir_o_criador" {
+  variables {
+    cluster_admin_arns = [
+      "arn:aws:iam::123456789012:user/criador",
+      "arn:aws:iam::123456789012:user/github-actions",
+    ]
+  }
+
+  assert {
+    condition     = keys(local.admins_do_cluster) == ["arn:aws:iam::123456789012:user/github-actions"]
+    error_message = "O criador já é admin; só os outros viram access entries."
+  }
+
+  assert {
+    condition     = local.admins_do_cluster["arn:aws:iam::123456789012:user/github-actions"].policy_associations.admin.policy_arn == "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+    error_message = "Os admins recebem a AmazonEKSClusterAdminPolicy no cluster inteiro."
+  }
+}
+
+run "sem_admins_extras_por_padrao" {
+  assert {
+    condition     = length(local.admins_do_cluster) == 0
+    error_message = "Sem cluster_admin_arns, só o criador tem acesso."
   }
 }
 
