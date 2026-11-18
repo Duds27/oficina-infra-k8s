@@ -5,10 +5,30 @@ locals {
     Environment = var.environment
     ManagedBy   = "terraform"
   }
+
+  # O criador do cluster sai da lista: ele já tem acesso, e um access entry repetido falha.
+  admins_do_cluster = {
+    for arn in var.cluster_admin_arns : arn => {
+      principal_arn = arn
+      policy_associations = {
+        admin = {
+          policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = { type = "cluster" }
+        }
+      }
+    } if arn != data.aws_iam_session_context.atual.issuer_arn
+  }
 }
 
 data "aws_availability_zones" "available" {
   state = "available"
+}
+
+# Quem aplica o Terraform (para não repetir o criador do cluster nos access entries).
+data "aws_caller_identity" "atual" {}
+
+data "aws_iam_session_context" "atual" {
+  arn = data.aws_caller_identity.atual.arn
 }
 
 # ───────────────────────────────── VPC ─────────────────────────────────
@@ -43,7 +63,10 @@ module "eks" {
   cluster_version = var.kubernetes_version
 
   cluster_endpoint_public_access = true
-  enable_irsa                    = true
+  # Sem IRSA: as roles dos pods vêm do EKS Pod Identity (addons.tf, storage.tf e o infra/ do
+  # execution-service). O IRSA precisa de um provider OIDC no IAM, que a SCP da organização
+  # da conta nega (iam:CreateOpenIDConnectProvider).
+  enable_irsa = false
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
@@ -64,6 +87,12 @@ module "eks" {
       })
     }
     kube-proxy = { most_recent = true }
+    # Agente do Pod Identity (DaemonSet): entrega as credenciais das roles associadas às
+    # ServiceAccounts. Antes dos nós, para os primeiros pods já acharem o agente.
+    eks-pod-identity-agent = {
+      before_compute = true
+      most_recent    = true
+    }
     coredns = {
       most_recent = true
       # 1 réplica economiza recursos no free tier (sem HA de DNS).
@@ -115,6 +144,10 @@ module "eks" {
 
   # Concede ao criador do cluster acesso admin (kubectl/CI).
   enable_cluster_creator_admin_permissions = true
+
+  # Outros admins (var.cluster_admin_arns): o usuário do CD dos serviços, quando não é o mesmo
+  # que aplica este Terraform, e quem usa o kubectl.
+  access_entries = local.admins_do_cluster
 
   tags = local.tags
 }

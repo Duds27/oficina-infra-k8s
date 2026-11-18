@@ -1,19 +1,14 @@
 # ───────────────────────── EBS CSI driver + StorageClass gp3 ─────────────────────────
 # O RabbitMQ precisa de volume persistente. Desde o Kubernetes 1.23 o provisionamento de
-# EBS só funciona pelo driver CSI, e o add-on gerenciado precisa de uma role IRSA própria.
-module "ebs_csi_irsa" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.44"
+# EBS só funciona pelo driver CSI, e o add-on gerenciado precisa de uma role própria, entregue
+# por Pod Identity (a associação é criada pelo próprio add-on, abaixo).
+module "ebs_csi_pod_identity" {
+  source  = "terraform-aws-modules/eks-pod-identity/aws"
+  version = "~> 1.12"
 
-  role_name             = "${local.name}-ebs-csi"
-  attach_ebs_csi_policy = true
-
-  oidc_providers = {
-    main = {
-      provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["kube-system:ebs-csi-controller-sa"]
-    }
-  }
+  name                      = "${local.name}-ebs-csi"
+  use_name_prefix           = false
+  attach_aws_ebs_csi_policy = true
 
   tags = local.tags
 }
@@ -21,7 +16,6 @@ module "ebs_csi_irsa" {
 resource "aws_eks_addon" "ebs_csi" {
   cluster_name                = module.eks.cluster_name
   addon_name                  = "aws-ebs-csi-driver"
-  service_account_role_arn    = module.ebs_csi_irsa.iam_role_arn
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
 
@@ -29,6 +23,11 @@ resource "aws_eks_addon" "ebs_csi" {
   configuration_values = jsonencode({
     controller = { replicaCount = 1 }
   })
+
+  pod_identity_association {
+    role_arn        = module.ebs_csi_pod_identity.iam_role_arn
+    service_account = "ebs-csi-controller-sa"
+  }
 
   tags = local.tags
 

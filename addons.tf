@@ -10,18 +10,21 @@ resource "helm_release" "metrics_server" {
 }
 
 # ───────────────────── AWS Load Balancer Controller ─────────────────────
-# IRSA role com a policy do controller (gerencia NLB/ALB e TargetGroupBinding).
-module "lb_controller_irsa" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.44"
+# Role do controller (gerencia NLB/ALB e TargetGroupBinding), entregue por Pod Identity à
+# ServiceAccount dele.
+module "lb_controller_pod_identity" {
+  source  = "terraform-aws-modules/eks-pod-identity/aws"
+  version = "~> 1.12"
 
-  role_name                              = "${local.name}-lb-controller"
-  attach_load_balancer_controller_policy = true
+  name                            = "${local.name}-lb-controller"
+  use_name_prefix                 = false
+  attach_aws_lb_controller_policy = true
 
-  oidc_providers = {
-    main = {
-      provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+  associations = {
+    controller = {
+      cluster_name    = module.eks.cluster_name
+      namespace       = "kube-system"
+      service_account = "aws-load-balancer-controller"
     }
   }
 
@@ -48,10 +51,6 @@ resource "helm_release" "aws_lb_controller" {
     value = "aws-load-balancer-controller"
   }
   set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = module.lb_controller_irsa.iam_role_arn
-  }
-  set {
     name  = "region"
     value = var.aws_region
   }
@@ -65,7 +64,9 @@ resource "helm_release" "aws_lb_controller" {
     value = "1"
   }
 
-  depends_on = [module.eks, helm_release.metrics_server]
+  # A associação do Pod Identity precisa existir quando o pod nasce: é aí que o EKS injeta as
+  # variáveis de credencial.
+  depends_on = [module.eks, module.lb_controller_pod_identity, helm_release.metrics_server]
 }
 
 # ───────────────────── New Relic Kubernetes integration ─────────────────────

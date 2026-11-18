@@ -19,11 +19,12 @@ volume persistente e um listener do NLB por serviço.
 ## Tecnologias
 
 - **Terraform** (providers aws, kubernetes, helm, alekc/kubectl, http, random) e módulos
-  `terraform-aws-modules/{vpc,eks,iam}`.
+  `terraform-aws-modules/{vpc,eks,eks-pod-identity}`.
 - **Amazon EKS**, metrics-server, AWS Load Balancer Controller, add-on `aws-ebs-csi-driver`,
   New Relic nri-bundle.
 - **RabbitMQ Cluster Operator v2.21.1** e imagem `rabbitmq:4.1-management`.
-- Estado remoto **S3** + trava **DynamoDB**. CI/CD **GitHub Actions** (OIDC).
+- Estado remoto **S3** + trava **DynamoDB**. CI/CD **GitHub Actions**, com OIDC ou chave de acesso (veja [Conta AWS](#conta-aws)).
+- Roles dos pods por **EKS Pod Identity**, sem provider OIDC no IAM.
 
 ## Arquitetura
 
@@ -50,9 +51,9 @@ flowchart TB
 
 | Arquivo | O que cria |
 | --- | --- |
-| `main.tf` | VPC (2 AZs, NAT único), EKS (IRSA habilitado) e o NLB interno: um `aws_lb_target_group` (alvos IP, porta 8080, health check `/health/ready`) e um `aws_lb_listener` por serviço de `var.servicos` |
-| `addons.tf` | metrics-server, aws-load-balancer-controller (IRSA) e nri-bundle, com o Prometheus agent (só com a licença) |
-| `storage.tf` | add-on `aws-ebs-csi-driver` com role IRSA própria e a StorageClass `gp3`, marcada como padrão |
+| `main.tf` | VPC (2 AZs, NAT único), EKS (agente do Pod Identity, admins de `cluster_admin_arns`) e o NLB interno: um `aws_lb_target_group` (alvos IP, porta 8080, health check `/health/ready`) e um `aws_lb_listener` por serviço de `var.servicos` |
+| `addons.tf` | metrics-server, aws-load-balancer-controller (role por Pod Identity) e nri-bundle, com o Prometheus agent (só com a licença) |
+| `storage.tf` | add-on `aws-ebs-csi-driver` com role própria por Pod Identity e a StorageClass `gp3`, marcada como padrão |
 | `namespaces.tf` | `oficina-<serviço>` e `messaging` |
 | `rabbitmq.tf` | Operator, `RabbitmqCluster`, usuários e secrets |
 
@@ -109,15 +110,46 @@ por nó. Uma estimativa de requests em homolog:
 Com 2 × `t3.small`, isso fica em torno de 2,4 GiB de 2,8 GiB alocáveis, sem folga para o HPA subir réplicas. Com 3 × `t3.small` (4,2 GiB), sobra espaço para o HPA. Para usar:
 `-var='node_instance_types=["t3.small"]'`.
 
+## Conta AWS
+
+A conta do grupo é do **Free plan** e fica numa organização gerenciada pela própria AWS. As SCPs
+dessa organização valem acima de qualquer permissão do IAM, inclusive da `AdministratorAccess`.
+Medido em 2026-11-17:
+
+- **Região:** só a **`us-east-2`** (Ohio) é liberada, e é o padrão de `aws_region`. Nas outras, os
+  serviços regionais (EC2, EKS, RDS, ECR, Lambda...) são negados.
+- **OIDC no IAM:** `iam:CreateOpenIDConnectProvider` é negado em qualquer região. Por isso:
+  - os pods recebem as roles por **EKS Pod Identity**, e não por IRSA (`enable_irsa = false`);
+  - o GitHub Actions entra com a **chave de acesso de um usuário IAM** (`AWS_ACCESS_KEY_ID` e
+    `AWS_SECRET_ACCESS_KEY`). Numa conta sem essa restrição, use o OIDC (`AWS_DEPLOY_ROLE_ARN`).
+    Cadastre só uma das duas formas.
+
+**Acesso ao cluster.** Quem aplica este Terraform vira admin do EKS. Se o CD dos serviços ou o
+`kubectl` usarem outro usuário IAM, liste os ARNs em `cluster_admin_arns`. No CD, eles vêm da
+variable `EKS_ADMIN_ARNS`, uma lista JSON, por exemplo `["arn:aws:iam::<conta>:user/<usuario>"]`.
+
 ## Executar / deploy
 
-Deploy automático em `homolog`/`prod`. Requer `AWS_DEPLOY_ROLE_ARN`, `NEW_RELIC_LICENSE_KEY`
-(secrets) e `AWS_REGION`, `TF_STATE_BUCKET`, `TF_LOCK_TABLE` (variables).
+Deploy automático em `homolog`/`prod`. Requer, no repositório:
+
+- **Secrets:**
+  - a credencial da AWS: `AWS_DEPLOY_ROLE_ARN` (OIDC) ou `AWS_ACCESS_KEY_ID` com `AWS_SECRET_ACCESS_KEY`;
+  - `NEW_RELIC_LICENSE_KEY`.
+- **Variables:**
+  - `AWS_REGION` (`us-east-2`), `TF_STATE_BUCKET` e `TF_LOCK_TABLE`;
+  - `EKS_ADMIN_ARNS`, opcional.
 
 ```bash
 terraform init -backend-config="bucket=<S3>" -backend-config="key=infra-k8s/homolog/terraform.tfstate" ...
+terraform apply -var="environment=homolog" -target=module.eks   # só na primeira vez
 terraform apply -var="environment=homolog"
 ```
+
+**Primeiro apply.** Num ambiente novo, o provider `kubectl` não aceita o endpoint do cluster ainda
+desconhecido no plan, e o plan falha com `no configuration has been provided`. Por isso a VPC e o
+EKS sobem antes, com `-target=module.eks`, e o resto vem no apply seguinte. O CD faz isso sozinho
+quando o cluster não existe. Conferido com um plan real na conta, em 2026-11-17: 47 recursos no
+primeiro passo e 98 no total.
 
 **Ordem na migração da Fase 3 para a 4:** o listener único (porta 80) e o target group `app`
 dão lugar a um por serviço. Depois do apply daqui, aplique o `oficina-lambda-auth` (rotas por
@@ -132,11 +164,13 @@ terraform test
 ```
 
 `tests/plataforma.tftest.hcl` roda sem conta AWS nem cluster. Os providers são mockados, e a
-VPC, o EKS e as roles IRSA são substituídos pelas saídas que os recursos daqui usam. Os casos:
+VPC, o EKS e as roles do Pod Identity são substituídos pelas saídas que os recursos daqui usam. Os casos:
 
 - um listener e um target group por serviço;
 - os namespaces;
-- EBS CSI com IRSA e a gp3 como padrão;
+- EBS CSI com Pod Identity e a gp3 como padrão;
+- LB controller sem a anotação de IRSA;
+- admins do cluster, sem repetir o criador;
 - usuários, secrets e definitions do RabbitMQ;
 - operator fixado e com recursos reduzidos;
 - métricas do RabbitMQ por fila e coletadas pelo nri-bundle;
@@ -150,7 +184,7 @@ O CI roda `fmt`, `validate` e `test` em todo PR.
 
 | Output | Para quê |
 | --- | --- |
-| `cluster_name`, `cluster_endpoint`, `oidc_provider_arn` | CDs dos serviços e roles IRSA |
+| `cluster_name`, `cluster_endpoint` | CDs dos serviços e as associações de Pod Identity (execution-service) |
 | `vpc_id`, `vpc_cidr`, `private_subnet_ids`, `public_subnet_ids`, `nodes_security_group_id` | RDS dos serviços, Lambda e VPC Link |
 | `nlb_dns_name`, `listener_ports` | `OS_SERVICE_URL` da Lambda (`http://<dns>:<porta do os>`) |
 | `listener_arns` | Integração de cada rota do API Gateway |

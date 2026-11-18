@@ -1,6 +1,13 @@
 variable "aws_region" {
-  type    = string
-  default = "us-east-1"
+  type = string
+  # A conta do grupo (Free plan, numa organização gerenciada pela AWS) só libera a us-east-2.
+  default = "us-east-2"
+}
+
+variable "cluster_admin_arns" {
+  type        = list(string)
+  default     = []
+  description = "Usuários ou roles IAM com acesso de admin ao cluster, além de quem o criou: o usuário do CD dos serviços e quem usa o kubectl."
 }
 
 variable "project" {
